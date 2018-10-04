@@ -1,0 +1,333 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Description": "Workload VPC: Creates a VPC for CSRv or UTM spoke connectivity",
+  "Parameters": {
+    "VPCName": {
+      "Description": "Which Workload VPC are you deploying? *** Use this value for the Stack Name ***",
+      "Type": "String",
+      "Default": "ECMC-Dev-Test-Qa",
+      "AllowedValues": [
+        "ECMC-Production-FISMA-PCI",
+        "ECMC-Staging-Uat-FISMA-PCI",
+        "ECMC-Production",
+        "ECMC-Staging-Uat",
+        "ECMC-Dev-Test-Qa",
+        "Zenith-Production",
+        "Zenith-Staging-Uat",
+        "Zenith-Dev-Test-Qa",
+        "Infrastructure-Services-Production",
+        "Security-Services-Production",
+        "Enterprise-Services-Production",
+        "Infrastructure-Services-Staging-Uat",
+        "Security-Services-Staging-Uat",
+        "Enterprise-Services-Staging-Uat",
+        "Master-Staging-Uat",
+        "Master-Production"
+      ],
+      "ConstraintDescription": "You must select which VPC to deploy"
+    },
+    "AutomaticVPNtoTransitVPC": {
+      "Description": "Automatically connect a VPN to the appropriate Transit VPC",
+      "Type": "String",
+      "Default": "false",
+      "AllowedValues": [
+        "true",
+        "false"
+      ]
+    },
+    "VpcCidr": {
+      "Description": "IP address range for the VPC (CIDR block such as 123.123.123.123/32).",
+      "Type": "String",
+      "AllowedPattern": "(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})/(\\d{1,2})",
+      "Default": "0.0.0.0/0"
+    },
+    "Environment": {
+      "Description": "The environment supported by this VPC",
+      "Type": "String",
+      "Default": "non-production",
+      "AllowedValues": [
+        "non-production",
+        "production"
+      ]
+    },
+    "VPNEndpoint": {
+      "Description": "The environment supporting this VPC's VPN",
+      "Type": "String",
+      "Default": "CheckPoint",
+      "AllowedValues": [
+        "CheckPoint",
+        "Cisco"
+      ]
+    }
+  },
+  "Metadata": {
+    "AWS::CloudFormation::Designer": {
+      "ParameterGroups": [
+        {
+          "Label": {
+            "default": "VPC Configuration"
+          },
+          "Parameters": [
+            "VPCName",
+            "AutomaticVPNtoTransitVPC",
+            "VpcCidr",
+            "Environment",
+            "VPNEndpoint"
+          ]
+        }
+      ],
+      "ParameterLabels": {
+        "VPCName": {
+          "default": "Which VPC are you deploying?"
+        },
+        "VpcCidr": {
+          "default": "Network CIDR of the VPC"
+        },
+        "Environment": {
+          "default": "production or non-production"
+        },
+        "AutomaticVPNtoTransitVPC": {
+          "default": "Automatically connect a VPN"
+        },
+        "VPNEndpoint": {
+          "default": "The environment supporting this VPC's VPN"
+        }
+      }
+    }
+  },
+  "Conditions": {
+    "AutomaticVPNtoTransitVPC": {
+      "Fn::Equals": [
+        {
+          "Ref": "AutomaticVPNtoTransitVPC"
+        },
+        "true"
+      ]
+    },
+    "CheckPointVPNEndpoint": {
+      "Fn::And": [
+        {
+          "Fn::Equals": [
+            {
+              "Ref": "VPNEndpoint"
+            },
+            "CheckPoint"
+          ]
+        },
+        {
+          "Condition": "AutomaticVPNtoTransitVPC"
+        }
+      ]
+    },
+    "VPNEnvironment": {
+      "Fn::Equals": [
+        {
+          "Ref": "Environment"
+        },
+        "production"
+      ]
+    }
+  },
+  "Resources": {
+    "VGW": {
+      "Type": "AWS::EC2::VPNGateway",
+      "Properties": {
+        "Type": "ipsec.1",
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": {
+              "Fn::Join": [
+                "",
+                [
+                  {
+                    "Ref": "VPCName"
+                  },
+                  "-VGW"
+                ]
+              ]
+            }
+          },
+          {
+            "Key": {
+              "Fn::If": [
+                "VPNEnvironment",
+                "productiontransitvpc:preferred-path",
+                "nonproductiontransitvpc:preferred-path"
+              ]
+            },
+            "Value": "CSR1"
+          },
+          {
+            "Key": {
+              "Fn::If": [
+                "VPNEnvironment",
+                "productiontransitvpc:CSRspoke",
+                "nonproductiontransitvpc:CSRspoke"
+              ]
+            },
+            "Value": {
+              "Fn::If": [
+                "CheckPointVPNEndpoint",
+                "false",
+                {
+                  "Ref": "AutomaticVPNtoTransitVPC"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "VPCVPNGatewayAttachment": {
+      "Type": "AWS::EC2::VPCGatewayAttachment",
+      "Properties": {
+        "VpcId": {
+          "Ref": "VPC"
+        },
+        "VpnGatewayId": {
+          "Ref": "VGW"
+        }
+      }
+    },
+    "VPC": {
+      "DependsOn": "VGW",
+      "Type": "AWS::EC2::VPC",
+      "Properties": {
+        "CidrBlock": {
+          "Ref": "VpcCidr"
+        },
+        "EnableDnsSupport": true,
+        "EnableDnsHostnames": true,
+        "InstanceTenancy": "default",
+        "Tags": [
+          {
+            "Key": "Transit VPN Endpoint",
+            "Value": {
+              "Ref": "VPNEndpoint"
+            }
+          },
+          {
+            "Key": "environment",
+            "Value": {
+              "Fn::Sub": "${Environment}"
+            }
+          },
+          {
+            "Key": "Name",
+            "Value": {
+              "Fn::Sub": "${VPCName}-VPC"
+            }
+          },
+          {
+            "Key": "x-chkp-vpn",
+            "Value": {
+              "Fn::If": [
+                "CheckPointVPNEndpoint",
+                {
+                  "Fn::If": [
+                    "VPNEnvironment",
+                    "prod-mgmt/prod-vpn-community",
+                    "nonprod-mgmt/nonprod-vpn-community"
+                  ]
+                },
+                "none"
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "DHCPOptions": {
+      "Type": "AWS::EC2::DHCPOptions",
+      "Properties": {
+        "DomainName": "ecmc.lan",
+        "DomainNameServers": [
+          "10.4.210.100, 10.14.210.100"
+        ],
+        "NtpServers": [
+          "169.254.169.123"
+        ],
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": "ECMC DHCP Options"
+          }
+        ]
+      }
+    },
+    "VPCDHCPOptionsAssociation": {
+      "Type": "AWS::EC2::VPCDHCPOptionsAssociation",
+      "Properties": {
+        "VpcId": {
+          "Ref": "VPC"
+        },
+        "DhcpOptionsId": {
+          "Ref": "DHCPOptions"
+        }
+      }
+    }
+  },
+  "Outputs": {
+    "VPCID": {
+      "Description": "VPC ID",
+      "Value": {
+        "Ref": "VPC"
+      },
+      "Export": {
+        "Name": {
+          "Fn::Join": [
+            ":",
+            [
+              {
+                "Ref": "VPCName"
+              },
+              "VPCID"
+            ]
+          ]
+        }
+      }
+    },
+    "VpcCidr": {
+      "Description": "VPC CIDR",
+      "Value": {
+        "Fn::GetAtt": [
+          "VPC",
+          "CidrBlock"
+        ]
+      },
+      "Export": {
+        "Name": {
+          "Fn::Join": [
+            ":",
+            [
+              {
+                "Ref": "VPCName"
+              },
+              "VpcCidr"
+            ]
+          ]
+        }
+      }
+    },
+    "VGW": {
+      "Description": "VGW ID",
+      "Value": {
+        "Ref": "VGW"
+      },
+      "Export": {
+        "Name": {
+          "Fn::Join": [
+            ":",
+            [
+              {
+                "Ref": "VPCName"
+              },
+              "VGW"
+            ]
+          ]
+        }
+      }
+    }
+  }
+}
